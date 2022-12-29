@@ -1,6 +1,7 @@
 from transformers import AutoTokenizer, AutoModelForTokenClassification
 import torch
 import nltk
+from TweetNormalizer import normalizeTweet
 nltk.download('punkt')
 
 class TokensClassTasks:
@@ -14,7 +15,7 @@ class Model:
         self.model = AutoModelForTokenClassification.from_pretrained(task)
 
     def run_model(self, text):
-        input_ids = torch.tensor([self.tokenizer.encode(text)])
+        input_ids = torch.tensor([self.tokenizer.encode(normalizeTweet(text))])
         logits = self.model(input_ids).logits
         predicted_class_id = logits.argmax(dim=2)
         classes = [self.model.config.id2label[x.item()] for x in predicted_class_id[0]]

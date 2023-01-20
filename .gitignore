@@ -1,2 +1,7 @@
 data
 __pycache__
+*.csv
+.ipynb_checkpoints
+*.sh
+git
+target_model/topic_model

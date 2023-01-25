@@ -5,3 +5,4 @@ __pycache__
 *.sh
 git
 target_model/topic_model
+target_model/fine_tuned_with_topic

@@ -6,7 +6,7 @@ import json
 
 import nltk
 from nltk.tokenize import sent_tokenize
-from BackTranslation.translated import Translated
+from back_translate.translated import Translated
 
 try:
     nltk.data.find('tokenizers/punkt')

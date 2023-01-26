@@ -2,8 +2,8 @@ from googletrans import Translator
 import nltk
 from nltk.tokenize import sent_tokenize
 import time
-from BackTranslation.languages import LANGUAGES, LANG_CODES
-from BackTranslation.translated import Translated
+from back_translate.languages import LANGUAGES, LANG_CODES
+from back_translate.translated import Translated
 import typing
 import httpcore
 
@@ -99,7 +99,7 @@ class BackTranslation(object):
         :rtype: dict
 
         Usage:
-            >>> trans = BackTranslation()
+            >>> trans = back_translate()
             >>> trans.searchLanguage('frenc')
             # {'french': 'fr'}
             >>> trans.searchLanguage('Chinese')

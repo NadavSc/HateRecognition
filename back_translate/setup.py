@@ -2,7 +2,7 @@ from distutils.core import setup
 import setuptools
 
 setup(
-    name = 'BackTranslation',
+    name = 'back_translate',
     version = "0.3.1",
     author = "Zhiqiang Wu",
     author_email = "wzq0515@gmail.com",

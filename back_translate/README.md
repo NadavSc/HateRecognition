@@ -40,8 +40,9 @@ Attributes:
 * back_text: back-tranlsated result
 
 ```python
-from BackTranslation import BackTranslation
-trans = BackTranslation(url=[
+
+import back_translate
+trans = back_translate(url=[
       'translate.google.com',
       'translate.google.co.kr',
     ], proxies={'http': '127.0.0.1:1234', 'http://host.name': '127.0.0.1:4012'})
@@ -60,8 +61,9 @@ Parameters:
 * **language**: required. A language name in english.
 
 ```python
-from BackTranslation import BackTranslation
-trans = BackTranslation()
+
+import back_translate
+trans = back_translate()
 trans.searchLanguage('Chinese')
 # {'chinese (simplified)': 'zh-cn', 'chinese (traditional)': 'zh-tw'}
 ```
@@ -70,7 +72,7 @@ To use this stable translation, you are required to register in [Baidu Translati
 It supports 2 million chacters per day for free.
 _Note: Currently, they only support Chinese phone number to register the accout._
 ````python
-from BackTranslation import BackTranslation_Baidu
+from back_translate import BackTranslation_Baidu
 trans = BackTranslation_Baidu(appid='YOUR APPID', secretKey='YOUR SECRETKEY')
 result = trans.translate('hello', src='auto', tmp='zh')
 print(result.result_text)

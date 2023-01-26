@@ -3,6 +3,7 @@ import io
 import re
 import torch
 import pdb
+import random
 import gensim
 import pickle
 import numpy as np
@@ -10,10 +11,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from torch import nn
+from datetime import datetime
+from BackTranslation import BackTranslation
 from transformers import BertModel, BertTokenizer
 from os.path import abspath, dirname
 from nltk import WordNetLemmatizer
-
+from back_translate import back_translate_augment
 
 PATH = dirname(dirname(abspath(__file__)))
 DATA_DIR = os.path.join(PATH, 'data')
@@ -34,21 +37,23 @@ def lemmatize(token):
     return WordNetLemmatizer().lemmatize(token, pos='v')
 
 
-def preprocess(tweet):
-    result = re.sub(r'(RT\s@[A-Za-z]+[A-Za-z0-9-_]+)', '', tweet)
-    result = re.sub(r'(@[A-Za-z0-9-_]+)', '', result)
-    result = re.sub(r'http\S+', '', result)
-    result = re.sub(r'bit.ly/\S+', '', result)
-    result = re.sub(r'(.)\1+', r'\1\1', result)
-    # result = " ".join(re.findall('[A-Z][^A-Z]*', result))
-    result = re.sub(r'&[\S]+?;', '', result)
-    result = re.sub(r'#', ' ', result)
-    result = re.sub(r'[^\w\s]', r'', result)
-    result = re.sub(r'\w*\d\w*', r'', result)
-    result = re.sub(r'\s\s+', ' ', result)
-    result = re.sub(r'(\A\s+|\s+\Z)', '', result)
-    # result = tokenize(result)
-    return result
+def preprocess(text, p=0.7):
+    if random.random() < p:
+        result = re.sub(r'(RT\s@[A-Za-z]+[A-Za-z0-9-_]+)', '', text)
+        result = re.sub(r'(@[A-Za-z0-9-_]+)', '', result)
+        result = re.sub(r'http\S+', '', result)
+        result = re.sub(r'bit.ly/\S+', '', result)
+        result = re.sub(r'(.)\1+', r'\1\1', result)
+        # result = " ".join(re.findall('[A-Z][^A-Z]*', result))
+        result = re.sub(r'&[\S]+?;', '', result)
+        result = re.sub(r'#', ' ', result)
+        result = re.sub(r'[^\w\s]', r'', result)
+        result = re.sub(r'\w*\d\w*', r'', result)
+        result = re.sub(r'\s\s+', ' ', result)
+        result = re.sub(r'(\A\s+|\s+\Z)', '', result)
+        # result = tokenize(result)
+        return result
+    return text
 
 
 def tokenize(tweet):
@@ -60,56 +65,54 @@ def tokenize(tweet):
     return res
 
 
-def insert_hate_label(dataset, threshold):
-    label = [1 if label_mean >= threshold else 0 for label_mean in dataset['label_mean']]
-    dataset.insert(1, "label", label, True)
-    dataset.to_csv(f'{DATA_DIR}/classification/parler_annotated_data_labeled{threshold}.csv', index=False)
-    return dataset
-
-
-def prep_data(threshold=3, mode='regression', tokenizer=False):
-    dataset = pd.read_csv(annotated_data_path)
-    if mode == 'classification':
-        dataset = insert_hate_label(dataset, threshold)
-        dataset = dataset[['label', 'text']]
-    else:
-        dataset = dataset[['label_mean', 'text']]
-        dataset.rename(columns={'label_mean': 'label'}, inplace=True)
-        dataset['label'] = dataset['label'].astype('float32')
-
-    if tokenizer:
-        dataset['text'] = dataset['text'].apply(preprocess)
-        dataset.drop(dataset.index[(dataset['text'] == '')], axis=0, inplace=True)
-    dataset.to_csv(f'{DATA_DIR}/{mode}/parler_annotated_data_prep{threshold}.csv', index=False)
-
-
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, df):
+    def __init__(self, df, clear_text, back_translation, threshold=3):
+        self.df = df
+        self.clear_text = clear_text
+        self.back_translation = back_translation
+        self.threshold =threshold
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-cased')
-        self.labels = [label for label in df['label']]
-        self.texts = [self.tokenizer(text,
-                                     padding='max_length', max_length=512, truncation=True,
-                                     return_tensors="pt") for text in df['text']]
+        self.languages = ['text', 'BackTranslation_de', 'BackTranslation_fr', 'BackTranslation_es', 'BackTranslation_nl', 'BackTranslation_no']
+
+    def _transform(self, text):
+        if self.clear_text:
+            text = preprocess(text, p=0.7)
+        text = self.tokenizer(text=text,
+                              padding='max_length',
+                              max_length=512,
+                              truncation=True,
+                              return_tensors="pt")
+        for k, v in text.items():
+            text[k] = torch.tensor(v, dtype=torch.long)
+        return text
 
     def classes(self):
-        return self.labels
+        return self.df['label_mean']
 
     def __len__(self):
-        return len(self.labels)
+        return len(self.df)
 
-    def get_batch_labels(self, idx):
-        # Fetch a batch of labels
-        return np.array(self.labels[idx])
+    def get_label(self, idx):
+        label = self.df['label_mean'].iloc[idx]
+        if self.threshold == 0:  # Regression
+            return label
+        return int(label > self.threshold)  # Classification
 
-    def get_batch_texts(self, idx):
-        # Fetch a batch of inputs
-        return self.texts[idx]
+    def random_language(self, idx):
+        language = self.languages[random.randint(0, 5)]
+        while pd.isna(self.df[language].iloc[idx]):
+            language = self.languages[random.randint(0, 5)]
+        return self.df[language].iloc[idx]
+
+    def get_text(self, idx):
+        if self.back_translation:
+            return self.random_language(idx)
+        return self.df['text'].iloc[idx]
 
     def __getitem__(self, idx):
-        batch_texts = self.get_batch_texts(idx)
-        batch_y = self.get_batch_labels(idx)
-
-        return batch_texts, batch_y
+        text = self._transform(self.get_text(idx))
+        label = torch.tensor(self.get_label(idx))
+        return text, label
 
 
 class BertClassifier(nn.Module):
@@ -153,17 +156,18 @@ def plot(save_dir):
         acc_val = CPU_Unpickler(f).load()
     with open(f'{save_dir}/loss_val.pkl', 'rb') as f:
         loss_val = CPU_Unpickler(f).load()
+    x_axis = [i + 1 for i in range(20)]
     fig, axis = plt.subplots(nrows=1, ncols=2)
-    axis[0].plot(loss_train, label='train')
-    axis[0].plot(loss_val, label='val')
+    fig.suptitle('Classification')
+    axis[0].plot(x_axis, loss_train, label='train')
+    axis[0].plot(x_axis, loss_val, label='val')
     axis[0].set_ylabel('Loss')
     axis[0].set_xlabel('Epoch')
     axis[0].legend()
-    axis[0].set_xticks(list(range(5)))
-    axis[1].plot(acc_train, label='train')
-    axis[1].plot(acc_val, label='val')
+    axis[1].plot(x_axis, acc_train, label='train')
+    axis[1].plot(x_axis, acc_val, label='val')
     axis[1].set_ylabel('Accuracy')
     axis[1].set_xlabel('Epoch')
     axis[1].legend()
-    axis[1].set_xticks(list(range(5)))
     plt.show()
+

@@ -57,7 +57,7 @@ def model_init(threshold, weighted_loss=False):
         threshold = 0
     else:
         rmse = False
-        weight = torch.tensor([0.7, 1.2]).to(device)
+        weight = torch.tensor([0.9, 1.2]).to(device)
         criterion = nn.CrossEntropyLoss(weight=weight) if weighted_loss else nn.CrossEntropyLoss()
     model = BertClassifier(mode=mode)
     optimizer = Adam(model.parameters(), lr=LR)
@@ -66,7 +66,7 @@ def model_init(threshold, weighted_loss=False):
 
 def train(model, train_data, val_data, criterion, optimizer, preprocess, threshold):
     train = Dataset(df=train_data, clear_text=preprocess['clear_text'], back_translation=preprocess['back_translation'], threshold=threshold)
-    val = Dataset(df=val_data, clear_text=preprocess['clear_text'], back_translation=False, threshold=threshold)
+    val = Dataset(df=val_data, clear_text=False, back_translation=False, threshold=threshold)
 
     train_dataloader = torch.utils.data.DataLoader(train, batch_size=BATCH_SIZE, shuffle=True)
     val_dataloader = torch.utils.data.DataLoader(val, batch_size=BATCH_SIZE)
@@ -117,23 +117,27 @@ def train(model, train_data, val_data, criterion, optimizer, preprocess, thresho
                 total_loss_val += batch_loss.item()
                 total_acc_val += acc
 
+        epoch_loss_train = total_loss_train / len(train_data)
+        epoch_acc_train = total_acc_train / len(train_data)
+        epoch_loss_val = total_loss_val / len(val_data)
+        epoch_acc_val = total_acc_val / len(val_data)
         print(
-            f'Epochs: {epoch_num + 1} | Train Loss: {total_loss_train / len(train_data): .3f} \
-                | Train Accuracy: {total_acc_train / len(train_data): .3f} \
-                | Val Loss: {total_loss_val / len(val_data): .3f} \
-                | Val Accuracy: {total_acc_val / len(val_data): .3f}')
+            f'Epochs: {epoch_num + 1} | Train Loss: {epoch_loss_train: .3f} \
+                | Train Accuracy: {epoch_acc_train: .3f} \
+                | Val Loss: {epoch_loss_val: .3f} \
+                | Val Accuracy: {epoch_acc_val: .3f}')
 
-        if total_loss_val < best_loss:
-            total_loss_val = best_loss
-            best_acc_loss = total_acc_val
+        if epoch_loss_val < best_loss:
+            epoch_loss_val = best_loss
+            best_acc_loss = epoch_acc_val
             best_model_wts_loss = copy.deepcopy(model.state_dict())
-        if total_acc_val > best_acc:
-            best_acc = total_acc_val
+        if epoch_acc_val > best_acc:
+            best_acc = epoch_acc_val
             best_model_wts = copy.deepcopy(model.state_dict())
-        hist_total_acc_train.append(total_acc_train/len(train_data))
-        hist_total_loss_train.append(total_loss_train/len(train_data))
-        hist_total_acc_val.append(total_acc_val/len(val_data))
-        hist_total_loss_val.append(total_loss_val/len(val_data))
+        hist_total_acc_train.append(epoch_acc_train)
+        hist_total_loss_train.append(epoch_loss_train)
+        hist_total_acc_val.append(epoch_acc_val)
+        hist_total_loss_val.append(epoch_loss_val)
         
     model.load_state_dict(best_model_wts)
     torch.save(model.state_dict(), os.path.join(save_dir, f'model_by_acc_{int(best_acc * 100)}.pt'))
@@ -143,7 +147,7 @@ def train(model, train_data, val_data, criterion, optimizer, preprocess, thresho
 
 
 mode = 'classification'  # regression / classification
-weighted_loss = False
+weighted_loss = True
 preprocess = {'clear_text': True,
               'back_translation': True}
 EPOCHS = 10

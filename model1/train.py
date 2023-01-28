@@ -17,7 +17,7 @@ from torch import nn
 from torch.optim import Adam
 from tqdm import tqdm
 
-from model1 import BertClassifier, Dataset, DATA_DIR, prep_data, save_results, plot
+from model1 import BertClassifier, Dataset, DATA_DIR, save_results, plot
 
 
 def loss_calc(output, label, criterion):
@@ -32,25 +32,60 @@ def acc_calc(output, label):
     return (output.argmax(dim=1) == label).sum().item()
 
 
-def train(model, train_data, val_data, criterion, optimizer):
-    train, val = Dataset(train_data), Dataset(val_data)
+def save_dir_init():
+    try:
+        save_dir = os.path.join(model1_dir, f'running1')
+        os.mkdir(os.path.join(model1_dir, 'running1'))
+    except:
+        idx = max([int(fname[-1]) for fname in os.listdir(model1_dir) if 'running' in fname])
+        save_dir = os.path.join(model1_dir, f'running{idx + 1}')
+        os.mkdir(save_dir)
+    return  save_dir
+
+
+def device_run():
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if use_cuda else "cpu")
+    print(f'{device} is running')
+    return device
+
+
+def model_init(threshold, weighted_loss=False):
+    if mode == 'regression':
+        rmse = True
+        criterion = nn.MSELoss()
+        threshold = 0
+    else:
+        rmse = False
+        weight = torch.tensor([0.9, 1.2]).to(device)
+        criterion = nn.CrossEntropyLoss(weight=weight) if weighted_loss else nn.CrossEntropyLoss()
+    model = BertClassifier(mode=mode)
+    optimizer = Adam(model.parameters(), lr=LR)
+    return model, optimizer, criterion, threshold, rmse
+
+
+def train(model, train_data, val_data, criterion, optimizer, preprocess, threshold):
+    train = Dataset(df=train_data, clear_text=preprocess['clear_text'], back_translation=preprocess['back_translation'], threshold=threshold)
+    val = Dataset(df=val_data, clear_text=False, back_translation=False, threshold=threshold)
 
     train_dataloader = torch.utils.data.DataLoader(train, batch_size=BATCH_SIZE, shuffle=True)
     val_dataloader = torch.utils.data.DataLoader(val, batch_size=BATCH_SIZE)
 
-    if use_cuda:
-        model = model.cuda()
-        criterion = criterion.cuda()
+    model = model.to(device)
+    criterion = criterion.to(device)
 
     hist_total_acc_train = []
     hist_total_loss_train = []
     hist_total_acc_val = []
     hist_total_loss_val = []
+    best_model_wts = copy.deepcopy(model.state_dict())
+    best_model_wts_loss = copy.deepcopy(model.state_dict())
+    best_acc = 0.0
+    best_loss = 100
 
     for epoch_num in range(EPOCHS):
         total_acc_train = 0
         total_loss_train = 0
-
         for train_input, train_label in tqdm(train_dataloader):
             train_label = train_label.to(device).float()[:, np.newaxis] if mode == 'regression' else train_label.to(device)
             mask = train_input['attention_mask'].to(device)
@@ -82,63 +117,59 @@ def train(model, train_data, val_data, criterion, optimizer):
                 total_loss_val += batch_loss.item()
                 total_acc_val += acc
 
+        epoch_loss_train = total_loss_train / len(train_data)
+        epoch_acc_train = total_acc_train / len(train_data)
+        epoch_loss_val = total_loss_val / len(val_data)
+        epoch_acc_val = total_acc_val / len(val_data)
         print(
-            f'Epochs: {epoch_num + 1} | Train Loss: {total_loss_train / len(train_data): .3f} \
-                | Train Accuracy: {total_acc_train / len(train_data): .3f} \
-                | Val Loss: {total_loss_val / len(val_data): .3f} \
-                | Val Accuracy: {total_acc_val / len(val_data): .3f}')
-        hist_total_acc_train.append(total_acc_train/len(train_data))
-        hist_total_loss_train.append(total_loss_train/len(train_data))
-        hist_total_acc_val.append(total_acc_val/len(val_data))
-        hist_total_loss_val.append(total_loss_val/len(val_data))
-        
-    model_wts = copy.deepcopy(model.state_dict())
-    model.load_state_dict(model_wts)
-    torch.save(model.state_dict(), os.path.join(save_dir, f'model_{mode}.pt'))
+            f'Epochs: {epoch_num + 1} | Train Loss: {epoch_loss_train: .3f} \
+                | Train Accuracy: {epoch_acc_train: .3f} \
+                | Val Loss: {epoch_loss_val: .3f} \
+                | Val Accuracy: {epoch_acc_val: .3f}')
 
+        if epoch_loss_val < best_loss:
+            epoch_loss_val = best_loss
+            best_acc_loss = epoch_acc_val
+            best_model_wts_loss = copy.deepcopy(model.state_dict())
+        if epoch_acc_val > best_acc:
+            best_acc = epoch_acc_val
+            best_model_wts = copy.deepcopy(model.state_dict())
+        hist_total_acc_train.append(epoch_acc_train)
+        hist_total_loss_train.append(epoch_loss_train)
+        hist_total_acc_val.append(epoch_acc_val)
+        hist_total_loss_val.append(epoch_loss_val)
+        
+    model.load_state_dict(best_model_wts)
+    torch.save(model.state_dict(), os.path.join(save_dir, f'model_by_acc_{int(best_acc * 100)}.pt'))
+    model.load_state_dict(best_model_wts_loss)
+    torch.save(model.state_dict(), os.path.join(save_dir, f'model_by_loss_{int(best_acc_loss*100)}.pt'))
     return model, hist_total_acc_train, hist_total_loss_train, hist_total_acc_val, hist_total_loss_val
 
 
 mode = 'classification'  # regression / classification
-threshold = 3
-PREPDATA = False
-tokenizer = False
-
-rmse = False
-EPOCHS = 3
+weighted_loss = True
+preprocess = {'clear_text': True,
+              'back_translation': True}
+EPOCHS = 10
 BATCH_SIZE = 8
 LR = 1e-6
-use_cuda = torch.cuda.is_available()
-device = torch.device("cuda" if use_cuda else "cpu")
-print(f'{device} is running')
 
-if mode == 'regression':
-    criterion = nn.MSELoss()
-    threshold = ''
-    annotated_prep_data_path = f'{DATA_DIR}/{mode}/parler_annotated_data_prep{threshold}.csv'
+threshold = 3
+if preprocess['back_translation']:
+    df = pd.read_csv(f'{DATA_DIR}/parler_annotated_data_bt.csv')
 else:
-    criterion = nn.CrossEntropyLoss()
-    annotated_prep_data_path = f'{DATA_DIR}/{mode}/parler_annotated_data_prep{threshold}.csv'
-
-if PREPDATA:
-    prep_data(threshold=threshold, mode=mode, tokenizer=tokenizer)
-df = pd.read_csv(annotated_prep_data_path)
+    df = pd.read_csv(f'{DATA_DIR}/parler_annotated_data.csv')
 df_train, df_test = np.split(df.sample(frac=1, random_state=42), [int(.8*len(df))])
 
-model = BertClassifier(mode=mode)
-# weight = torch.tensor([0.7, 1.2]).to(device)
-optimizer = Adam(model.parameters(), lr=LR)
-try:
-    save_dir = os.path.join(model1_dir, f'running1')
-    os.mkdir(os.path.join(model1_dir, 'running1'))
-except:
-    idx = max([int(fname[-1]) for fname in os.listdir(model1_dir) if 'running' in fname])
-    save_dir = os.path.join(model1_dir, f'running{idx+1}')
-    os.mkdir(save_dir)
+save_dir = save_dir_init()
+device = device_run()
+model, optimizer, criterion, threshold, rmse = model_init(threshold, weighted_loss=weighted_loss)
 model, acc_train, loss_train, acc_val, loss_val = train(model=model,
                                                         train_data=df_train,
                                                         val_data=df_test,
                                                         criterion=criterion,
-                                                        optimizer=optimizer)
+                                                        optimizer=optimizer,
+                                                        preprocess=preprocess,
+                                                        threshold=threshold)
 save_results(save_dir, acc_train, loss_train, acc_val, loss_val)
 # plot(save_dir)

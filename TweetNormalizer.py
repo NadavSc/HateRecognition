@@ -8,7 +8,7 @@ tokenizer = TweetTokenizer()
 def normalizeToken(token):
     lowercased_token = token.lower()
     if token.startswith("@"):
-        return "@USER"
+        return "<user>"
     if token.startswith("#"):
         return token[1:]
     elif lowercased_token.startswith("http") or lowercased_token.startswith("www"):

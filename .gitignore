@@ -1,8 +1,13 @@
-data
 __pycache__
-*.csv
 .ipynb_checkpoints
 *.sh
 git
 target_model/topic_model
+target_model/topic_model_with_other
 target_model/fine_tuned_with_topic
+target_model/finetune_plain
+target_model/finetune_topic_no_other
+target_model/finetune_topic_other
+target_model/TopicTuner
+*.out
+*.log

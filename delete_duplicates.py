@@ -14,3 +14,19 @@ def remove_duplicates(s):
             output.append(orig_world)
         i += 1
     return ' '.join(word for word in output)
+
+def no_dups(s, thres=3):
+    for num_of_words in range(1, int(len(s) / thres)):
+        s = s.split()
+        i = 0
+        while i + num_of_words < len(s):
+            orig_seq = s[i:i + num_of_words]
+            j = i + num_of_words
+            dif_seq = s[j: j + num_of_words]
+            while j + num_of_words < len(s) and dif_seq == orig_seq:
+                j += num_of_words
+                dif_seq = s[j:j + num_of_words]
+            if j - i > thres * num_of_words:
+                return False
+            i += 1
+    return True

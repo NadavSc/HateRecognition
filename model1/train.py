@@ -7,23 +7,14 @@ model1_dir = os.path.join(project_path, 'model1')
 sys.path.append(project_path)
 sys.path.append(model1_dir)
 
-import torch
 import pdb
+import torch
 import copy
 import numpy as np
 import pandas as pd
 
-from torch import nn
-from torch.optim import Adam
 from tqdm import tqdm
-
-from model1 import BertClassifier, Dataset, DATA_DIR, save_results, plot
-
-
-def loss_calc(output, label, criterion):
-    if rmse:
-        return torch.sqrt(criterion(output, label))
-    return criterion(output, label.long())
+from model1 import Dataset, DATA_DIR, save_results, metric_calc, current_device, model_init, loss_calc, set_save_dir, confusion_matrix, calculate_precision_recall_f1
 
 
 def acc_calc(output, label):
@@ -34,39 +25,18 @@ def acc_calc(output, label):
 
 def save_dir_init():
     try:
-        save_dir = os.path.join(model1_dir, f'running1')
-        os.mkdir(os.path.join(model1_dir, 'running1'))
+        save_dir = os.path.join(model1_dir, f'running_1')
+        os.mkdir(os.path.join(model1_dir, 'running_1'))
     except:
-        idx = max([int(fname[-1]) for fname in os.listdir(model1_dir) if 'running' in fname])
-        save_dir = os.path.join(model1_dir, f'running{idx + 1}')
+        idx = max([int(fname.split('_')[-1]) for fname in os.listdir(model1_dir) if 'running' in fname])
+        save_dir = set_save_dir(idx)
         os.mkdir(save_dir)
-    return  save_dir
-
-
-def device_run():
-    use_cuda = torch.cuda.is_available()
-    device = torch.device("cuda" if use_cuda else "cpu")
-    print(f'{device} is running')
-    return device
-
-
-def model_init(threshold, weighted_loss=False):
-    if mode == 'regression':
-        rmse = True
-        criterion = nn.MSELoss()
-        threshold = 0
-    else:
-        rmse = False
-        weight = torch.tensor([0.9, 1.2]).to(device)
-        criterion = nn.CrossEntropyLoss(weight=weight) if weighted_loss else nn.CrossEntropyLoss()
-    model = BertClassifier(mode=mode)
-    optimizer = Adam(model.parameters(), lr=LR)
-    return model, optimizer, criterion, threshold, rmse
+    return save_dir
 
 
 def train(model, train_data, val_data, criterion, optimizer, preprocess, threshold):
     train = Dataset(df=train_data, clear_text=preprocess['clear_text'], back_translation=preprocess['back_translation'], threshold=threshold)
-    val = Dataset(df=val_data, clear_text=False, back_translation=False, threshold=threshold)
+    val = Dataset(df=val_data, clear_text=preprocess['clear_text'], back_translation=False, threshold=threshold)
 
     train_dataloader = torch.utils.data.DataLoader(train, batch_size=BATCH_SIZE, shuffle=True)
     val_dataloader = torch.utils.data.DataLoader(val, batch_size=BATCH_SIZE)
@@ -84,8 +54,11 @@ def train(model, train_data, val_data, criterion, optimizer, preprocess, thresho
     best_loss = 100
 
     for epoch_num in range(EPOCHS):
+        y_pred = []
+        y_true = []
         total_acc_train = 0
         total_loss_train = 0
+        model.train()
         for train_input, train_label in tqdm(train_dataloader):
             train_label = train_label.to(device).float()[:, np.newaxis] if mode == 'regression' else train_label.to(device)
             mask = train_input['attention_mask'].to(device)
@@ -103,8 +76,9 @@ def train(model, train_data, val_data, criterion, optimizer, preprocess, thresho
 
         total_acc_val = 0
         total_loss_val = 0
-
+        pdb.set_trace()
         with torch.no_grad():
+            model.eval()
             for val_input, val_label in val_dataloader:
                 val_label = val_label.to(device).float()[:, np.newaxis] if mode == 'regression' else val_label.to(device)
                 mask = val_input['attention_mask'].to(device)
@@ -114,9 +88,14 @@ def train(model, train_data, val_data, criterion, optimizer, preprocess, thresho
                 batch_loss = loss_calc(output, val_label, criterion)
                 acc = acc_calc(output, val_label)
 
+                y_pred += list(np.array(output.argmax(dim=1).cpu()))
+                y_true += list(np.array(val_label.cpu()))
+
                 total_loss_val += batch_loss.item()
                 total_acc_val += acc
 
+        tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+        precision, recall, f1 = calculate_precision_recall_f1(tp, fp, fn)
         epoch_loss_train = total_loss_train / len(train_data)
         epoch_acc_train = total_acc_train / len(train_data)
         epoch_loss_val = total_loss_val / len(val_data)
@@ -125,10 +104,13 @@ def train(model, train_data, val_data, criterion, optimizer, preprocess, thresho
             f'Epochs: {epoch_num + 1} | Train Loss: {epoch_loss_train: .3f} \
                 | Train Accuracy: {epoch_acc_train: .3f} \
                 | Val Loss: {epoch_loss_val: .3f} \
-                | Val Accuracy: {epoch_acc_val: .3f}')
+                | Val Accuracy: {epoch_acc_val: .3f} \
+                | Val Precision: {precision: .3f} \
+                | Val Recall: {recall: .3f} \
+                | Val F1: {f1: .3f}')
 
-        if epoch_loss_val < best_loss:
-            epoch_loss_val = best_loss
+        if epoch_loss_val <= best_loss:
+            best_loss = epoch_loss_val
             best_acc_loss = epoch_acc_val
             best_model_wts_loss = copy.deepcopy(model.state_dict())
         if epoch_acc_val > best_acc:
@@ -143,33 +125,41 @@ def train(model, train_data, val_data, criterion, optimizer, preprocess, thresho
     torch.save(model.state_dict(), os.path.join(save_dir, f'model_by_acc_{int(best_acc * 100)}.pt'))
     model.load_state_dict(best_model_wts_loss)
     torch.save(model.state_dict(), os.path.join(save_dir, f'model_by_loss_{int(best_acc_loss*100)}.pt'))
-    return model, hist_total_acc_train, hist_total_loss_train, hist_total_acc_val, hist_total_loss_val
+    metrics = metric_calc(val_dataloader=val_dataloader, model=model, device=device)
+    history = {'acc_train': hist_total_acc_train,
+               'loss_train': hist_total_loss_train,
+               'acc_val': hist_total_acc_val,
+               'loss_val': hist_total_loss_val}
+    return model, history, metrics
 
 
 mode = 'classification'  # regression / classification
 weighted_loss = True
 preprocess = {'clear_text': True,
               'back_translation': True}
-EPOCHS = 10
+EPOCHS = 15
 BATCH_SIZE = 8
 LR = 1e-6
 
-threshold = 3
+threshold = 4
 if preprocess['back_translation']:
-    df = pd.read_csv(f'{DATA_DIR}/parler_annotated_data_bt.csv')
+    df = pd.read_csv(f'{DATA_DIR}/parler_annotated_data_bt_post.csv')
 else:
     df = pd.read_csv(f'{DATA_DIR}/parler_annotated_data.csv')
 df_train, df_test = np.split(df.sample(frac=1, random_state=42), [int(.8*len(df))])
 
 save_dir = save_dir_init()
-device = device_run()
-model, optimizer, criterion, threshold, rmse = model_init(threshold, weighted_loss=weighted_loss)
-model, acc_train, loss_train, acc_val, loss_val = train(model=model,
-                                                        train_data=df_train,
-                                                        val_data=df_test,
-                                                        criterion=criterion,
-                                                        optimizer=optimizer,
-                                                        preprocess=preprocess,
-                                                        threshold=threshold)
-save_results(save_dir, acc_train, loss_train, acc_val, loss_val)
-# plot(save_dir)
+device = current_device()
+model, optimizer, criterion, threshold, rmse = model_init(threshold=threshold,
+                                                          device=device,
+                                                          mode=mode,
+                                                          lr=LR,
+                                                          weighted_loss=weighted_loss)
+model, history, metrics = train(model=model,
+                                train_data=df_train,
+                                val_data=df_test,
+                                criterion=criterion,
+                                optimizer=optimizer,
+                                preprocess=preprocess,
+                                threshold=threshold)
+save_results(save_dir, history['acc_train'], history['loss_train'], history['acc_val'], history['loss_val'])

@@ -2,23 +2,23 @@ import os
 import io
 import re
 import torch
-import pdb
 import random
 import gensim
 import pickle
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import torch.nn.functional as F
 
 from torch import nn
-from datetime import datetime
-from BackTranslation import BackTranslation
+from torch.optim import Adam
 from transformers import BertModel, BertTokenizer
 from os.path import abspath, dirname
 from nltk import WordNetLemmatizer
-from back_translate import back_translate_augment
+from sklearn.metrics import confusion_matrix
+
 
 PATH = dirname(dirname(abspath(__file__)))
+model1_dir = os.path.join(PATH, 'model1')
 DATA_DIR = os.path.join(PATH, 'data')
 annotated_data_path = os.path.join(DATA_DIR, 'parler_annotated_data.csv')
 annotated_labeled_data_path = os.path.join(DATA_DIR, 'parler_annotated_data_labeled.csv')
@@ -33,8 +33,95 @@ class CPU_Unpickler(pickle.Unpickler):
             return super().find_class(module, name)
 
 
+def set_save_dir(idx, eval=False):
+    return os.path.join(model1_dir, f'running_{idx}') if eval else os.path.join(model1_dir, f'running_{idx + 1}')
+
+
+def current_device():
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if use_cuda else "cpu")
+    print(f'{device} is running')
+    return device
+
+
+def calculate_precision_recall_f1(tp, fp, fn):
+    """ Calculate precision, recall, and f1 score
+    :param tp: true positive number
+    :type tp: int
+    :param fp: false positive number
+    :type fp: int
+    :param fn: false negative number
+    :type fn: int
+    :return: (precision, recall, f1 score)
+    :rtype: tuple
+    """
+
+    if (tp + fp) == 0:
+        precision = 0.0
+    else:
+        precision = 1.0 * tp / (tp + fp)
+
+    if (tp + fn) == 0:
+        recall = 0.0
+    else:
+        recall = 1.0 * tp / (tp + fn)
+
+    if (precision + recall) == 0:
+        f1 = 0.0
+    else:
+        f1 = 2.0 * (precision * recall) / (precision + recall)
+
+    return precision, recall, f1
+
+
+def metric_calc(val_dataloader, model, device):
+    y_true = []
+    y_pred = []
+    torch.manual_seed(1)
+    with torch.no_grad():
+        for val_input, val_label in val_dataloader:
+            val_label = val_label.to(device).float()[:, np.newaxis]
+            mask = val_input['attention_mask'].squeeze(1).to(device)
+            input_id = val_input['input_ids'].squeeze(1).to(device)
+            outputs = model(input_id, mask)
+
+            prediction = np.array(F.softmax(outputs, dim=1).cpu())
+            cur_pred = np.argmax(prediction, axis=1)
+            y_pred += list(cur_pred)
+
+            cur_true = np.array(val_label.cpu())
+            y_true += list(cur_true)
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+    precision, recall, f1 = calculate_precision_recall_f1(tp, fp, fn)
+    return {'precision': precision, 'recall': recall, 'f1': f1}
+
+
 def lemmatize(token):
     return WordNetLemmatizer().lemmatize(token, pos='v')
+
+
+def remove_dups(post, thresh=4):
+    post = post.split()
+    for num_of_words in range(1, int(len(post) / thresh)):
+        i = 0
+        while i + num_of_words < len(post):
+            orig_seq = post[i:i + num_of_words]
+            j = i + num_of_words
+            dif_seq = post[j: j + num_of_words]
+            while j + num_of_words < len(post) and dif_seq == orig_seq:
+                j += num_of_words
+                dif_seq = post[j:j + num_of_words]
+            if j - i > thresh * num_of_words:
+                return False
+            i += 1
+    return True
+
+
+def remove_duplicates(post):
+    if not pd.isna(post):
+        if remove_dups(post=post, thresh=7):
+            return post
+        return None
 
 
 def preprocess(text, p=0.7):
@@ -44,14 +131,12 @@ def preprocess(text, p=0.7):
         result = re.sub(r'http\S+', '', result)
         result = re.sub(r'bit.ly/\S+', '', result)
         result = re.sub(r'(.)\1+', r'\1\1', result)
-        # result = " ".join(re.findall('[A-Z][^A-Z]*', result))
         result = re.sub(r'&[\S]+?;', '', result)
         result = re.sub(r'#', ' ', result)
         result = re.sub(r'[^\w\s]', r'', result)
         result = re.sub(r'\w*\d\w*', r'', result)
         result = re.sub(r'\s\s+', ' ', result)
         result = re.sub(r'(\A\s+|\s+\Z)', '', result)
-        # result = tokenize(result)
         return result
     return text
 
@@ -65,6 +150,15 @@ def tokenize(tweet):
     return res
 
 
+def back_translation_dup_remove():
+    df = pd.read_csv(f'{DATA_DIR}/parler_annotated_data_bt.csv')
+    languages = ['spanish', 'german', 'french', 'russian', 'chinese']
+    df = df.drop('text.1', axis=1)
+    for lang in languages:
+        df[lang] = df[lang].apply(remove_duplicates)
+    df.to_csv(f'{DATA_DIR}/parler_annotated_data_bt_post.csv')
+
+
 class Dataset(torch.utils.data.Dataset):
     def __init__(self, df, clear_text, back_translation, threshold=3):
         self.df = df
@@ -72,11 +166,11 @@ class Dataset(torch.utils.data.Dataset):
         self.back_translation = back_translation
         self.threshold =threshold
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-cased')
-        self.languages = ['text', 'BackTranslation_de', 'BackTranslation_fr', 'BackTranslation_es', 'BackTranslation_nl', 'BackTranslation_no']
+        self.languages = ['text', 'spanish', 'german', 'french']
 
     def _transform(self, text):
         if self.clear_text:
-            text = preprocess(text, p=0.7)
+            text = preprocess(text, p=1)
         text = self.tokenizer(text=text,
                               padding='max_length',
                               max_length=512,
@@ -99,9 +193,9 @@ class Dataset(torch.utils.data.Dataset):
         return int(label > self.threshold)  # Classification
 
     def random_language(self, idx):
-        language = self.languages[random.randint(0, 5)]
+        language = self.languages[random.randint(0, 3)]
         while pd.isna(self.df[language].iloc[idx]):
-            language = self.languages[random.randint(0, 5)]
+            language = self.languages[random.randint(0, 3)]
         return self.df[language].iloc[idx]
 
     def get_text(self, idx):
@@ -113,6 +207,26 @@ class Dataset(torch.utils.data.Dataset):
         text = self._transform(self.get_text(idx))
         label = torch.tensor(self.get_label(idx))
         return text, label
+
+
+def loss_calc(output, label, criterion, rmse=False):
+    if rmse:
+        return torch.sqrt(criterion(output, label))
+    return criterion(output, label.long())
+
+
+def model_init(threshold, device, mode, lr, weighted_loss=False):
+    if mode == 'regression':
+        rmse = True
+        criterion = nn.MSELoss()
+        threshold = 0
+    else:
+        rmse = False
+        weight = torch.tensor([0.9, 1.5]).to(device)
+        criterion = nn.CrossEntropyLoss(weight=weight) if weighted_loss else nn.CrossEntropyLoss()
+    model = BertClassifier(mode=mode).to(device)
+    optimizer = Adam(model.parameters(), lr=lr)
+    return model, optimizer, criterion, threshold, rmse
 
 
 class BertClassifier(nn.Module):
@@ -145,29 +259,3 @@ def save_results(save_dir, acc_train, loss_train, acc_val, loss_val):
         pickle.dump(acc_val, f)
     with open(f'{save_dir}/loss_val.pkl', 'wb') as f:
         pickle.dump(loss_val, f)
-
-
-def plot(save_dir):
-    with open(f'{save_dir}/acc_train.pkl', 'rb') as f:
-        acc_train = CPU_Unpickler(f).load()
-    with open(f'{save_dir}/loss_train.pkl', 'rb') as f:
-        loss_train = CPU_Unpickler(f).load()
-    with open(f'{save_dir}/acc_val.pkl', 'rb') as f:
-        acc_val = CPU_Unpickler(f).load()
-    with open(f'{save_dir}/loss_val.pkl', 'rb') as f:
-        loss_val = CPU_Unpickler(f).load()
-    x_axis = [i + 1 for i in range(20)]
-    fig, axis = plt.subplots(nrows=1, ncols=2)
-    fig.suptitle('Classification')
-    axis[0].plot(x_axis, loss_train, label='train')
-    axis[0].plot(x_axis, loss_val, label='val')
-    axis[0].set_ylabel('Loss')
-    axis[0].set_xlabel('Epoch')
-    axis[0].legend()
-    axis[1].plot(x_axis, acc_train, label='train')
-    axis[1].plot(x_axis, acc_val, label='val')
-    axis[1].set_ylabel('Accuracy')
-    axis[1].set_xlabel('Epoch')
-    axis[1].legend()
-    plt.show()
-

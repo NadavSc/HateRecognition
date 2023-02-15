@@ -18,7 +18,7 @@ from sklearn.metrics import confusion_matrix
 
 
 PATH = dirname(dirname(abspath(__file__)))
-model1_dir = os.path.join(PATH, 'model1')
+model1_dir = os.path.join(PATH, 'hate_detection_model')
 DATA_DIR = os.path.join(PATH, 'data')
 annotated_data_path = os.path.join(DATA_DIR, 'parler_annotated_data.csv')
 annotated_labeled_data_path = os.path.join(DATA_DIR, 'parler_annotated_data_labeled.csv')

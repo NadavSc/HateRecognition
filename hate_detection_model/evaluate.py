@@ -3,7 +3,7 @@ import sys
 from os.path import dirname, abspath
 
 project_path = dirname(dirname(abspath(__file__)))
-model1_dir = os.path.join(project_path, 'model1')
+model1_dir = os.path.join(project_path, 'hate_detection_model')
 sys.path.append(project_path)
 sys.path.append(model1_dir)
 
